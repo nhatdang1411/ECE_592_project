@@ -79,6 +79,10 @@ BaseCache::CacheResponsePort::CacheResponsePort(const std::string &_name,
 
 BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
     : ClockedObject(p),
+      Ctr_cache(p.Ctr_cache),
+      MT_cache(p.MT_cache),
+      encryption_enable(p.encrypt_en),
+      encryptionLatency(p.encrypt_latency),
       cpuSidePort (p.name + ".cpu_side_port", *this, "CpuSidePort"),
       memSidePort(p.name + ".mem_side_port", this, "MemSidePort"),
       mshrQueue("MSHRs", p.mshrs, 0, p.demand_mshr_reserve, p.name),
@@ -423,17 +427,77 @@ BaseCache::recvTimingReq(PacketPtr pkt)
 
     Cycles lat;
     CacheBlk *blk = nullptr;
+    CacheBlk *ctr_blk = nullptr;
+    CacheBlk *mt_blk = nullptr;
     bool satisfied = false;
+    bool ctr_sastisfied = false;
+    bool mt_sastisfied = false;
+    Cycles mac_lat(40);
+    Cycles enc_lat(0);
+    if (encryption_enable) {
+        enc_lat = mac_lat;
+    }
+    unsigned mt_miss_lvl = 0;
     {
-        PacketList writebacks;
+        PacketList writebacks, ctr_writebacks, mt_writebacks;
+        std::vector<PacketPtr> ctr_pkt;
         // Note that lat is passed by reference here. The function
         // access() will set the lat value.
         satisfied = access(pkt, blk, lat, writebacks);
+        if (writebacks.size() && encryption_enable){
+            unsigned idx = 0;
+            for (auto i = writebacks.begin(); i != writebacks.end(); ++i) {
+                ctr_pkt.push_back((*i)->createWrite((*i)->req));
+                PacketPtr temp = *i;
+                ctr_pkt[idx]->setAddr(temp->getAddr()/64);
+                ctr_pkt[idx]->setCounterCache();
+                ctr_sastisfied = ctr_access(ctr_pkt[idx], ctr_blk, lat,
+                ctr_writebacks);
+                unsigned mt_idx = 0;
+                std::vector<PacketPtr> mt_pkt;
+                if (!ctr_sastisfied) {
+                    // Send a counter read request to memory
+                    handleTimingReqMiss(ctr_pkt[idx], ctr_blk, forward_time,
+                    clockEdge(lat));
 
+                    Addr mt_addr = ctr_pkt[idx]->getAddr()/8;
+                    do {
+                        mt_pkt.push_back(new Packet(*ctr_pkt[idx]));
+                        mt_pkt[mt_idx]->setAddr(mt_addr);
+                        mt_pkt[mt_idx]->setMTCache();
+                        mt_addr =  mt_addr/8;
+                        mt_sastisfied = mt_access(mt_pkt[mt_idx],
+                                                    mt_blk,
+                                                    lat,
+                                                    mt_writebacks);
+                        if (!mt_sastisfied) {
+                            handleTimingReqMiss(mt_pkt[idx], mt_blk,
+                                                forward_time,
+                                                clockEdge(lat));
+                            mt_miss_lvl++;
+                        }
+                        mt_idx++;
+                    } while (mt_miss_lvl < 5 && !mt_sastisfied);
+
+
+
+                //doWritebacks(ctr_writebacks, clockEdge(lat+forwardLatency));
+                //doWritebacks(mt_writebacks, clockEdge(lat+forwardLatency));
+
+                }
+                idx++;
+            }
+        }
+        Cycles mt_ctr_lat(mt_miss_lvl*200+ctr_sastisfied*200);
         // After the evicted blocks are selected, they must be forwarded
         // to the write buffer to ensure they logically precede anything
         // happening below
-        doWritebacks(writebacks, clockEdge(lat + forwardLatency));
+        doWritebacks(writebacks, clockEdge(lat
+                    + forwardLatency + mt_ctr_lat + enc_lat));
+        if (encryption_enable) {
+            doWritebacks(writebacks, clockEdge(lat + forwardLatency
+                         + mt_ctr_lat + mac_lat + enc_lat));
+        }
     }
 
     // Here we charge the headerDelay that takes into account the latencies
@@ -458,8 +522,44 @@ BaseCache::recvTimingReq(PacketPtr pkt)
 
         handleTimingReqHit(pkt, blk, request_time);
     } else {
-        handleTimingReqMiss(pkt, blk, forward_time, request_time);
+        if (encryption_enable) {
+            PacketList ctr_writebacks, mt_writebacks;
+            std::vector<PacketPtr> ctr_pkt, mt_pkt;
+            PacketPtr ctr_pk = pkt->createRead(pkt->req);
+            ctr_pk->setAddr(pkt->getAddr()/64);
+            ctr_pk->setCounterCache();
+            ctr_sastisfied = ctr_access(ctr_pk, ctr_blk, lat,
+            ctr_writebacks);
+            unsigned mt_idx = 0;
+            if (!ctr_sastisfied) {
+                // Send a counter read request to memory
+                handleTimingReqMiss(ctr_pk, ctr_blk, forward_time,
+                clockEdge(lat));
 
+                Addr mt_addr = ctr_pk->getAddr()/8;
+                do {
+                    mt_pkt.push_back(new Packet(*ctr_pk));
+                    mt_pkt[mt_idx]->setAddr(mt_addr);
+                    mt_pkt[mt_idx]->setMTCache();
+                    mt_addr =  mt_addr/8;
+                    mt_sastisfied = mt_access(mt_pkt[mt_idx],
+                                              mt_blk,
+                                              lat,
+                                              mt_writebacks);
+                    if (!mt_sastisfied) {
+                        handleTimingReqMiss(mt_pkt[mt_idx], mt_blk,
+                                            forward_time,
+                                            clockEdge(lat));
+                        mt_miss_lvl++;
+                    }
+                    mt_idx++;
+                } while (mt_miss_lvl < 5 && !mt_sastisfied);
+
+            }
+        }
+
+        //No need to add delay on the forward time since it 's a read access
+        handleTimingReqMiss(pkt, blk, forward_time, request_time);
         ppMiss->notify(pkt);
     }
 
@@ -1226,6 +1326,130 @@ BaseCache::calculateAccessLatency(const CacheBlk* blk, const uint32_t delay,
     return lat;
 }
 
+bool
+BaseCache::mt_access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
+                  PacketList &writebacks)
+{
+    // sanity check
+    assert(pkt->isRequest());
+    assert(pkt->MTcache());
+    gem5_assert(!(isReadOnly && pkt->isWrite()),
+                "Should never see a write in a read-only cache %s\n",
+                name());
+
+    // Access block in the tags
+    Cycles tag_latency(0);
+    blk = tags->accessBlock(pkt, tag_latency);
+
+    DPRINTF(Cache, "%s for %s %s\n", __func__, pkt->print(),
+            blk ? "hit " + blk->print() : "miss");
+
+
+    // The critical latency part of a write depends only on the tag access
+    if (pkt->isWrite()) {
+        lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
+    }
+
+    if (blk && (pkt->needsWritable() ?
+            blk->isSet(CacheBlk::WritableBit) :
+            blk->isSet(CacheBlk::ReadableBit))) {
+        // OK to satisfy access
+        incHitCount(pkt);
+
+        // Calculate access latency based on the need to access the data array
+        if (pkt->isRead()) {
+            lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
+
+            // When a block is compressed, it must first be decompressed
+            // before being read. This adds to the access latency.
+            if (compressor) {
+                lat += compressor->getDecompressionLatency(blk);
+            }
+        } else {
+            lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
+        }
+
+        satisfyRequest(pkt, blk);
+        maintainClusivity(pkt->fromCache(), blk);
+
+        return true;
+    }
+
+    // Can't satisfy access normally... either no block (blk == nullptr)
+    // or have block but need writable
+
+    incMissCount(pkt);
+
+    lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
+
+    if (!blk && pkt->isLLSC() && pkt->isWrite()) {
+        // complete miss on store conditional... just give up now
+        pkt->req->setExtraData(0);
+        return true;
+    }
+
+    return false;
+}
+
+bool
+BaseCache::ctr_access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
+                  PacketList &writebacks)
+{
+    // sanity check
+    assert(pkt->isRequest());
+    assert(pkt->CounterCache());
+    gem5_assert(!(isReadOnly && pkt->isWrite()),
+                "Should never see a write in a read-only cache %s\n",
+                name());
+
+    // Access block in the tags
+    Cycles tag_latency(0);
+    blk = tags->accessBlock(pkt, tag_latency);
+
+    DPRINTF(Cache, "%s for %s %s\n", __func__, pkt->print(),
+            blk ? "hit " + blk->print() : "miss");
+
+
+
+    // The critical latency part of a write depends only on the tag access
+    if (pkt->isWrite()) {
+        lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
+    }
+
+    if (blk && (pkt->needsWritable() ?
+            blk->isSet(CacheBlk::WritableBit) :
+            blk->isSet(CacheBlk::ReadableBit))) {
+        // OK to satisfy access
+        incHitCount(pkt);
+
+        // Calculate access latency based on the need to access the data array
+        if (pkt->isRead()) {
+            lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
+
+            // When a block is compressed, it must first be decompressed
+            // before being read. This adds to the access latency.
+            if (compressor) {
+                lat += compressor->getDecompressionLatency(blk);
+            }
+        } else {
+            lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
+        }
+
+        satisfyRequest(pkt, blk);
+        maintainClusivity(pkt->fromCache(), blk);
+
+        return true;
+    }
+
+    // Can't satisfy access normally... either no block (blk == nullptr)
+    // or have block but need writable
+
+    incMissCount(pkt);
+
+    lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
+
+    return false;
+}
 bool
 BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                   PacketList &writebacks)

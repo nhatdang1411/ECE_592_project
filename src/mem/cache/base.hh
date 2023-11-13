@@ -336,6 +336,15 @@ class BaseCache : public ClockedObject
 
   protected:
 
+    /** MT cache tag**/
+    BaseTags* MT_tags;
+
+    /** Counter cache tag**/
+    BaseTags* Ctr_tags;
+
+    /** Memory encryption enable **/
+    unsigned encryption_enable;
+
     /** Miss status registers */
     MSHRQueue mshrQueue;
 
@@ -483,6 +492,26 @@ class BaseCache : public ClockedObject
      * @param lat The latency of the access.
      * @param writebacks List for any writebacks that need to be performed.
      * @return Boolean indicating whether the request was satisfied.
+     */
+    virtual bool ctr_access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
+                        PacketList &writebacks);
+
+    /*
+     * Handle a timing request that hit in the counter cache
+     *
+     * @param ptk The request packet
+     * @param blk The referenced block
+     * @param request_time The tick at which the block lookup is compete
+     */
+    virtual bool mt_access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
+                        PacketList &writebacks);
+
+    /*
+     * Handle a timing request that hit in the merkle tree cache
+     *
+     * @param ptk The request packet
+     * @param blk The referenced block
+     * @param request_time The tick at which the block lookup is compete
      */
     virtual bool access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                         PacketList &writebacks);
@@ -894,6 +923,11 @@ class BaseCache : public ClockedObject
      * an access to the cache.
      */
     const Cycles dataLatency;
+
+    /**
+     * The latency of encryption engine
+    */
+    const Cycles encryptionLatency;
 
     /**
      * This is the forward latency of the cache. It occurs when there

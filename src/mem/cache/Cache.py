@@ -83,9 +83,12 @@ class BaseCache(ClockedObject):
     cxx_header = "mem/cache/base.hh"
     cxx_class = "gem5::BaseCache"
 
+    Ctr_cache = Param.BaseCache("Counter cache")
+    MT_cache = Param.BaseCache("Merkle tree cache")
+    encrypt_en = Param.Unsigned(0, "Memory encryption enable")
     size = Param.MemorySize("Capacity")
     assoc = Param.Unsigned("Associativity")
-
+    encrypt_latency = Param.Cycles("Encryption latency")
     tag_latency = Param.Cycles("Tag lookup latency")
     data_latency = Param.Cycles("Data access latency")
     response_latency = Param.Cycles("Latency for the return path on a miss")

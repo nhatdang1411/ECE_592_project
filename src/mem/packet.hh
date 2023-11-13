@@ -360,10 +360,16 @@ class Packet : public Printable, public Extensible<Packet>
 
         // Signal block present to squash prefetch and cache evict packets
         // through express snoop flag
-        BLOCK_CACHED          = 0x00010000
+        BLOCK_CACHED          = 0x00010000,
+
+        //MT cache request
+        MT_CACHE = 1,
+        //CTR cache request
+        CTR_CACHE = 2
     };
 
     Flags flags;
+    Flags src;
 
   public:
     typedef MemCmd::Command Command;
@@ -630,6 +636,27 @@ class Packet : public Printable, public Extensible<Packet>
             !isMaskedWrite();
     }
 
+    void setCounterCache()
+    {
+        assert(!src.isSet(CTR_CACHE));
+        src.set(CTR_CACHE);
+    }
+
+    bool CounterCache()
+    {
+        return src.isSet(CTR_CACHE);
+    }
+
+    void setMTCache()
+    {
+        assert(!src.isSet(MT_CACHE));
+        src.set(MT_CACHE);
+    }
+
+    bool MTcache()
+    {
+        return src.isSet(MT_CACHE);
+    }
     //@{
     /// Snoop flags
     /**

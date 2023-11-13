@@ -33,6 +33,7 @@ line options from each individual class.
 """
 
 import m5
+from m5.objects import NoncoherentCache
 from m5.objects import Cache
 
 # Add the common scripts to our path
@@ -110,7 +111,7 @@ class L1DCache(L1Cache):
         self.cpu_side = cpu.dcache_port
 
 
-class L2Cache(Cache):
+class L2Cache(NoncoherentCache):
     """Simple L2 Cache with default values"""
 
     # Default parameters

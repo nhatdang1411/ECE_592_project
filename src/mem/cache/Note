@@ -1,0 +1,65 @@
+1. We will use non coherent cache for the project
+
+2. Base cache
+
+  Base cache receive a request from CPU side
+  -> recvTimingReq
+    -> access (return if cache hit or miss, return writeback if the packet is wb type)
+    -> doWritebacks (forward to write buffer)
+      -> allocateWriteBuffer
+        -> writeBuffer.allocate()
+        -> schedMemSideSendEvent()
+    If cache miss
+      -> handleTimingReqMiss
+         if MSHR
+         -> allocateWriteBuffer
+         else
+         -> allocateMissBuffer
+          -> schedMemSideSendEvent()
+  -> recvTimingResp
+    -> handleFill (update writeback)
+      -> allocateBlock() (Update writeback)
+    -> doWritebacks (forward to write buffer)
+      -> allocateWriteBuffer
+        -> writeBuffer.allocate()
+        -> schedMemSideSendEvent()
+
+3. Implementation
+  Create a pointer to MT cache and Counter cache
+  Base cache receive a request from CPU side
+  -> recvTimingReq
+    -> access (return if cache hit or miss, return writeback if the packet is wb type)
+       if (cache miss)
+        -> CT cache -> access (return if counter cache hit or miss)
+        -> MT cache -> access (return if MT cache hit or miss)
+    -> doWritebacks (forward to write buffer)
+      -> allocateWriteBuffer
+        -> writeBuffer.allocate()
+        -> schedMemSideSendEvent()
+    If cache miss
+      -> handleTimingReqMiss
+         if MSHR
+         -> allocateWriteBuffer
+         else
+         -> allocateMissBuffer
+          -> schedMemSideSendEvent()
+  -> recvTimingResp
+    -> handleFill (update writeback)
+      -> allocateBlock() (Update writeback)
+    -> doWritebacks (forward to write buffer)
+      -> allocateWriteBuffer
+        -> writeBuffer.allocate()
+        -> schedMemSideSendEvent()
+
+4. Question
+ + How to add latency for data MAC and encryption
+  + If it is a write access then reschedule the event to MEM at a later time
+  + If it is a read access then reschedule the event to CPU at a later time
+ + How to implement MT cache access
+  + Write a new function for MT cache access
+
+  5. TO DO
+   + Implement change in MT cache access, counter cache access
+   + Implement change in handleTimingReqMiss for counter and MT cache
+   + Implement change in recvTimingResp for counter and MT cache
+   + Add stats for merkle tree cache and counter cache
