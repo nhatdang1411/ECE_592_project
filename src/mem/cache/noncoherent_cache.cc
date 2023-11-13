@@ -251,7 +251,10 @@ NoncoherentCache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt,
     MSHR::TargetList targets = mshr->extractServiceableTargets(pkt);
     for (auto &target: targets) {
         Packet *tgt_pkt = target.pkt;
-
+        if (!tgt_pkt->DataCache()){
+            delete tgt_pkt;
+            continue;
+        }
         switch (target.source) {
           case MSHR::Target::FromCPU:
             // handle deferred requests comming from a cache or core
@@ -262,7 +265,8 @@ NoncoherentCache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt,
             Tick completion_time;
             // Here we charge on completion_time the delay of the xbar if the
             // packet comes from it, charged on headerDelay.
-            completion_time = pkt->headerDelay;
+            completion_time = pkt->headerDelay+40*pkt->MTlevel()
+            + 40*(pkt->MTlevel() > 0) + 40;
 
             satisfyRequest(tgt_pkt, blk);
 

@@ -1029,6 +1029,9 @@ class BaseCache : public ClockedObject
 
         const BaseCache &cache;
 
+        statistics::Formula ctrmisses, mtmisses, ctrhits, mthits;
+        statistics::Formula ctrmissr, mtmissr;
+
         /** Number of hits per thread for each type of command.
             @sa Packet::Command */
         statistics::Vector hits;
@@ -1334,12 +1337,38 @@ class BaseCache : public ClockedObject
                 exitSimLoop("A cache reached the maximum miss count");
         }
     }
+
+    void incCtrMissCount(PacketPtr pkt) {
+        stats.cmdStats(pkt).ctrmisses++;
+        if (missCount) {
+            --missCount;
+            if (missCount == 0)
+                exitSimLoop("A cache reached the maximum miss count");
+        }
+    }
+
+    void incMTMissCount(PacketPtr pkt)  {
+        stats.cmdStats(pkt).mtmisses++;
+        if (missCount) {
+            --missCount;
+            if (missCount == 0)
+                exitSimLoop("A cache reached the maximum miss count");
+        }
+    }
+
     void incHitCount(PacketPtr pkt)
     {
         assert(pkt->req->requestorId() < system->maxRequestors());
         stats.cmdStats(pkt).hits[pkt->req->requestorId()]++;
     }
 
+    void incCtrHitCount (PacketPtr pkt) {
+        stats.cmdStats(pkt).ctrhits++;
+    }
+
+    void incMTHitCount (PacketPtr pkt) {
+        stats.cmdStats(pkt).mthits++;
+    }
     /**
      * Checks if the cache is coalescing writes
      *

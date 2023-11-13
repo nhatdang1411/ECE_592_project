@@ -83,11 +83,13 @@ class BaseCache(ClockedObject):
     cxx_header = "mem/cache/base.hh"
     cxx_class = "gem5::BaseCache"
 
-    Ctr_cache = Param.BaseCache("Counter cache")
-    MT_cache = Param.BaseCache("Merkle tree cache")
     encrypt_en = Param.Unsigned(0, "Memory encryption enable")
     size = Param.MemorySize("Capacity")
+    Ctr_size = Param.MemorySize("Counter Capacity")
+    MT_size = Param.MemorySize("MT Capacity")
     assoc = Param.Unsigned("Associativity")
+    Ctr_assoc = Param.Unsigned("Counter Associativity")
+    MT_assoc = Param.Unsigned("Merkle tree Associativity")
     encrypt_latency = Param.Cycles("Encryption latency")
     tag_latency = Param.Cycles("Tag lookup latency")
     data_latency = Param.Cycles("Data access latency")
@@ -117,6 +119,15 @@ class BaseCache(ClockedObject):
         False, "Notify the hardware prefetcher on hit on prefetched lines"
     )
 
+    MT_tag = BaseSetAssoc()
+    MT_tag.size = MT_size
+    MT_tag.assoc = MT_assoc
+
+    Ctr_tag = BaseSetAssoc()
+    Ctr_tag.size = Ctr_size
+    Ctr_tag.assoc = Ctr_assoc
+
+    MT_tags = Param.BaseTags()
     tags = Param.BaseTags(BaseSetAssoc(), "Tag store")
     replacement_policy = Param.BaseReplacementPolicy(
         LRURP(), "Replacement policy"

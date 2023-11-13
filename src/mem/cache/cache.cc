@@ -717,6 +717,10 @@ Cache::serviceMSHRTargets(MSHR *mshr, const PacketPtr pkt, CacheBlk *blk)
     MSHR::TargetList targets = mshr->extractServiceableTargets(pkt);
     for (auto &target: targets) {
         Packet *tgt_pkt = target.pkt;
+        if (!tgt_pkt->DataCache()){
+            delete tgt_pkt;
+            continue;
+        }
         switch (target.source) {
           case MSHR::Target::FromCPU:
             from_core = true;
