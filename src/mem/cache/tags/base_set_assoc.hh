@@ -94,8 +94,7 @@ class BaseSetAssoc : public BaseTags
     /**
      * Construct and initialize this tag store.
      */
-    BaseSetAssoc(const Params &p);
-
+    BaseSetAssoc(const Params &p, bool mt = 0, bool ctr = 0);
     /**
      * Destructor
      */

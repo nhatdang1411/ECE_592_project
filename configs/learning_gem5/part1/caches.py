@@ -122,6 +122,7 @@ class L2Cache(NoncoherentCache):
     response_latency = 20
     mshrs = 20
     tgts_per_mshr = 12
+    encrypt_en = 1
 
     SimpleOpts.add_option("--l2_size", help=f"L2 cache size. Default: {size}")
 

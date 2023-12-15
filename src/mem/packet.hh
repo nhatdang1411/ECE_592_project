@@ -362,18 +362,19 @@ class Packet : public Printable, public Extensible<Packet>
         // through express snoop flag
         BLOCK_CACHED          = 0x00010000,
 
+        DATA_CACHE = 1,
         //MT cache request
-        MT_CACHE = 1,
+        MT_CACHE = 2,
         //CTR cache request
-        CTR_CACHE = 2,
-
+        CTR_CACHE = 4,
+        MAC = 8,
         //MT MISS LEVEL
         MT_0 = 1,
         MT_1 = 2,
-        MT_2 = 3,
-        MT_3 = 4,
-        MT_4 = 5,
-        MT_5 = 6
+        MT_2 = 4,
+        MT_3 = 8,
+        MT_4 = 16,
+        MT_5 = 32
 
     };
 
@@ -668,9 +669,25 @@ class Packet : public Printable, public Extensible<Packet>
         return src.isSet(MT_CACHE);
     }
 
+    void setMAC()
+    {
+        assert(!src.isSet(MAC));
+        src.set(MAC);
+    }
+
+    bool isMAC()
+    {
+        return src.isSet(MAC);
+    }
+
     bool DataCache()
     {
-        return src.isSet(0);
+        return src.isSet(DATA_CACHE);
+    }
+
+    void setDataCache()
+    {
+        src.set(DATA_CACHE);
     }
 
     void setMTlevel(unsigned level)

@@ -50,6 +50,7 @@
 
 #include "base/intmath.hh"
 #include "base/logging.hh"
+#include "debug/Cache.hh"
 #include "mem/cache/replacement_policies/replaceable_entry.hh"
 
 namespace gem5
@@ -61,8 +62,13 @@ BaseIndexingPolicy::BaseIndexingPolicy(const Params &p)
       setShift(floorLog2(p.entry_size)), setMask(numSets - 1), sets(numSets),
       tagShift(setShift + floorLog2(numSets))
 {
+    fatal_if(p.entry_size == 0,"Entry size must be non-zero");
+    DPRINTF(Cache, "DB The value of set is %d", numSets);
+    DPRINTF(Cache, "DB The value of set is %d", numSets);
+    DPRINTF(Cache, "DB The value of set is %d", numSets);
     fatal_if(!isPowerOf2(numSets), "# of sets must be non-zero and a power " \
-             "of 2");
+             "of 2: %d, the size of the cache is %d", numSets, p.size);
+
     fatal_if(assoc <= 0, "associativity must be greater than zero");
 
     // Make space for the entries

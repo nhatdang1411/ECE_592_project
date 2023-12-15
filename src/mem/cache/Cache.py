@@ -85,12 +85,9 @@ class BaseCache(ClockedObject):
 
     encrypt_en = Param.Unsigned(0, "Memory encryption enable")
     size = Param.MemorySize("Capacity")
-    Ctr_size = Param.MemorySize("Counter Capacity")
-    MT_size = Param.MemorySize("MT Capacity")
     assoc = Param.Unsigned("Associativity")
-    Ctr_assoc = Param.Unsigned("Counter Associativity")
-    MT_assoc = Param.Unsigned("Merkle tree Associativity")
-    encrypt_latency = Param.Cycles("Encryption latency")
+    entry_size = Param.Int(64, "Cache line size")
+    encrypt_latency = Param.Cycles(40, "Encryption latency")
     tag_latency = Param.Cycles("Tag lookup latency")
     data_latency = Param.Cycles("Data access latency")
     response_latency = Param.Cycles("Latency for the return path on a miss")
@@ -119,15 +116,16 @@ class BaseCache(ClockedObject):
         False, "Notify the hardware prefetcher on hit on prefetched lines"
     )
 
-    MT_tag = BaseSetAssoc()
-    MT_tag.size = MT_size
-    MT_tag.assoc = MT_assoc
+    MTsize = Param.Unsigned(2048, "Merkle tree cache size")
+    MTassoc = Param.Int(8, "Merkle tree cache associativity")
 
-    Ctr_tag = BaseSetAssoc()
-    Ctr_tag.size = Ctr_size
-    Ctr_tag.assoc = Ctr_assoc
+    Ctrsize = Param.Unsigned(2048, "Counter cache size")
+    Ctrassoc = Param.Int(8, "Counter cache associativity")
 
-    MT_tags = Param.BaseTags()
+    indexing_policy = Param.BaseIndexingPolicy(
+        SetAssociative(), "Indexing policy"
+    )
+
     tags = Param.BaseTags(BaseSetAssoc(), "Tag store")
     replacement_policy = Param.BaseReplacementPolicy(
         LRURP(), "Replacement policy"

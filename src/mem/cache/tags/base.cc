@@ -58,9 +58,9 @@
 namespace gem5
 {
 
-BaseTags::BaseTags(const Params &p)
+BaseTags::BaseTags(const Params &p, bool mt, bool ctr)
     : ClockedObject(p), blkSize(p.block_size), blkMask(blkSize - 1),
-      size(p.size), lookupLatency(p.tag_latency),
+      size( p.size), lookupLatency(p.tag_latency),
       system(p.system), indexingPolicy(p.indexing_policy),
       warmupBound((p.warmup_percentage/100.0) * (p.size / p.block_size)),
       warmedUp(false), numBlocks(p.size / p.block_size),

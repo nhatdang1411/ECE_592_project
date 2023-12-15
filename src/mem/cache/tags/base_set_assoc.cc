@@ -52,7 +52,7 @@
 namespace gem5
 {
 
-BaseSetAssoc::BaseSetAssoc(const Params &p)
+BaseSetAssoc::BaseSetAssoc(const Params &p, bool mt, bool ctr)
     :BaseTags(p), allocAssoc(p.assoc), blks(p.size / p.block_size),
      sequentialAccess(p.sequential_access),
      replacementPolicy(p.replacement_policy)
@@ -65,7 +65,6 @@ BaseSetAssoc::BaseSetAssoc(const Params &p)
         fatal("Block size must be at least 4 and a power of 2");
     }
 }
-
 void
 BaseSetAssoc::tagsInit()
 {

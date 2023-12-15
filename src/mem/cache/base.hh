@@ -75,7 +75,8 @@
 #include "sim/serialize.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
-
+#include "mem/cache/tags/base_set_assoc.hh"
+#include "mem/cache/cache_1.hh"
 namespace gem5
 {
 
@@ -336,11 +337,11 @@ class BaseCache : public ClockedObject
 
   protected:
 
-    /** MT cache tag**/
-    BaseTags* MT_tags;
+    /** MT cache **/
+    cache* MT_cache;
 
     /** Counter cache tag**/
-    BaseTags* Ctr_tags;
+    cache* Ctr_cache;
 
     /** Memory encryption enable **/
     unsigned encryption_enable;
@@ -492,26 +493,6 @@ class BaseCache : public ClockedObject
      * @param lat The latency of the access.
      * @param writebacks List for any writebacks that need to be performed.
      * @return Boolean indicating whether the request was satisfied.
-     */
-    virtual bool ctr_access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
-                        PacketList &writebacks);
-
-    /*
-     * Handle a timing request that hit in the counter cache
-     *
-     * @param ptk The request packet
-     * @param blk The referenced block
-     * @param request_time The tick at which the block lookup is compete
-     */
-    virtual bool mt_access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
-                        PacketList &writebacks);
-
-    /*
-     * Handle a timing request that hit in the merkle tree cache
-     *
-     * @param ptk The request packet
-     * @param blk The referenced block
-     * @param request_time The tick at which the block lookup is compete
      */
     virtual bool access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                         PacketList &writebacks);
@@ -1029,8 +1010,6 @@ class BaseCache : public ClockedObject
 
         const BaseCache &cache;
 
-        statistics::Formula ctrmisses, mtmisses, ctrhits, mthits;
-        statistics::Formula ctrmissr, mtmissr;
 
         /** Number of hits per thread for each type of command.
             @sa Packet::Command */
@@ -1083,6 +1062,9 @@ class BaseCache : public ClockedObject
         }
 
         const BaseCache &cache;
+
+        statistics::Scalar ctrmisses, mtmisses, ctrhits, mthits;
+        statistics::Formula ctrmissr, mtmissr;
 
         /** Number of hits for demand accesses. */
         statistics::Formula demandHits;
@@ -1339,7 +1321,7 @@ class BaseCache : public ClockedObject
     }
 
     void incCtrMissCount(PacketPtr pkt) {
-        stats.cmdStats(pkt).ctrmisses++;
+        stats.ctrmisses++;
         if (missCount) {
             --missCount;
             if (missCount == 0)
@@ -1348,7 +1330,7 @@ class BaseCache : public ClockedObject
     }
 
     void incMTMissCount(PacketPtr pkt)  {
-        stats.cmdStats(pkt).mtmisses++;
+        stats.mtmisses++;
         if (missCount) {
             --missCount;
             if (missCount == 0)
@@ -1363,11 +1345,11 @@ class BaseCache : public ClockedObject
     }
 
     void incCtrHitCount (PacketPtr pkt) {
-        stats.cmdStats(pkt).ctrhits++;
+        stats.ctrhits++;
     }
 
     void incMTHitCount (PacketPtr pkt) {
-        stats.cmdStats(pkt).mthits++;
+        stats.mthits++;
     }
     /**
      * Checks if the cache is coalescing writes

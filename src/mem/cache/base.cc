@@ -86,8 +86,6 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
       mshrQueue("MSHRs", p.mshrs, 0, p.demand_mshr_reserve, p.name),
       writeBuffer("write buffer", p.write_buffers, p.mshrs, p.name),
       tags(p.tags),
-      MT_tags(p.MT_tags),
-      Ctr_tags(p.Ctr_tags),
       compressor(p.compressor),
       prefetcher(p.prefetcher),
       writeAllocator(p.write_allocator),
@@ -126,6 +124,20 @@ BaseCache::BaseCache(const BaseCacheParams &p, unsigned blk_size)
     // forward snoops is overridden in init() once we can query
     // whether the connected requestor is actually snooping or not
 
+    DPRINTF(Cache, "Size of MT cache is %d\n", p.MTsize);
+    DPRINTF(Cache, "Assoc of MT cache is %d\n", p.MTassoc);
+    DPRINTF(Cache, "Block size of MT cache is %d\n", blk_size);
+
+
+    DPRINTF(Cache, "Size of Counter cache is %d\n", p.Ctrsize);
+    DPRINTF(Cache, "Assoc of Counter cache is %d\n", p.Ctrassoc);
+    DPRINTF(Cache, "Block size of Counter cache is %d\n", blk_size);
+    if (encryption_enable) {
+        MT_cache = new cache (p.MTsize, blk_size, p.MTassoc, 0 ,0);
+        MT_cache->next = NULL;
+        Ctr_cache = new cache (p.Ctrsize, blk_size, p.Ctrassoc, 0 ,0);
+        Ctr_cache->next = NULL;
+    }
     tempBlock = new TempCacheBlk(blkSize);
 
     tags->tagsInit();
@@ -424,8 +436,7 @@ BaseCache::recvTimingReq(PacketPtr pkt)
         blk->setCoherenceBits(CacheBlk::ReadableBit);
         blk->setCoherenceBits(CacheBlk::WritableBit);
     }
-
-    assert (pkt->DataCache());
+    pkt->setDataCache();
     Cycles lat;
     CacheBlk *blk = nullptr;
     CacheBlk *ctr_blk = nullptr;
@@ -445,54 +456,60 @@ BaseCache::recvTimingReq(PacketPtr pkt)
         // Note that lat is passed by reference here. The function
         // access() will set the lat value.
         satisfied = access(pkt, blk, lat, writebacks);
+        Cycles mt_ctr_lat(0);
         if (writebacks.size() && encryption_enable){
             unsigned idx = 0;
             for (auto i = writebacks.begin(); i != writebacks.end(); ++i) {
 
-                PacketPtr mac = *i;
-                (*i)->setAddr((*i)->getAddr()/8);
+
+                PacketPtr mac = (*i)->createWrite((*i)->req);
+                mac->setAddr((*i)->getAddr()/8);
+                mac->setMAC();
                 mac_writebacks.push_back(mac);
 
                 ctr_pkt.push_back((*i)->createWrite((*i)->req));
-                PacketPtr temp = *i;
-                ctr_pkt[idx]->setAddr(temp->getAddr()/64);
+                ctr_pkt[idx]->setAddr(134217728+(*i)->getAddr()/64);
                 ctr_pkt[idx]->setCounterCache();
-                ctr_sastisfied = ctr_access(ctr_pkt[idx], ctr_blk, lat,
-                ctr_writebacks);
+                ctr_sastisfied = Ctr_cache->read_access(
+                                                ctr_pkt[idx]->getAddr());
                 unsigned mt_idx = 0;
                 std::vector<PacketPtr> mt_pkt;
                 if (!ctr_sastisfied) {
                     // Send a counter read request to memory
-                    handleTimingReqMiss(ctr_pkt[idx], ctr_blk, forward_time,
-                    clockEdge(lat));
-
+                    
+                    incCtrMissCount(pkt);
                     Addr mt_addr = ctr_pkt[idx]->getAddr()/8;
                     do {
                         mt_pkt.push_back(new Packet(*ctr_pkt[idx]));
                         mt_pkt[mt_idx]->setAddr(mt_addr);
                         mt_pkt[mt_idx]->setMTCache();
                         mt_addr =  mt_addr/8;
-                        mt_sastisfied = mt_access(mt_pkt[mt_idx],
-                                                    mt_blk,
-                                                    lat,
-                                                    mt_writebacks);
+                        mt_sastisfied = MT_cache->read_access(mt_addr);
                         if (!mt_sastisfied) {
-                            handleTimingReqMiss(mt_pkt[idx], mt_blk,
-                                                forward_time,
-                                                clockEdge(lat));
+                            incMTMissCount(pkt);
+                       //     handleTimingReqMiss(mt_pkt[idx], mt_blk,
+                       //                         forward_time,
+                       //                        clockEdge(lat));
                             mt_miss_lvl++;
+                        } else {
+                            incMTHitCount(pkt);
                         }
                         mt_idx++;
                     } while (mt_miss_lvl < 5 && !mt_sastisfied);
 
-                doWritebacks(ctr_writebacks, clockEdge(lat+forwardLatency));
-                doWritebacks(mt_writebacks, clockEdge(lat+forwardLatency));
+                //doWritebacks(ctr_writebacks, clockEdge(lat+forwardLatency));
+                //doWritebacks(mt_writebacks, clockEdge(lat+forwardLatency));
                     (*i)->setMTlevel(mt_miss_lvl+1);
+                } else {
+                    incCtrHitCount(pkt);
                 }
                 idx++;
             }
+            Cycles lat(mt_miss_lvl*200+ctr_sastisfied*200);
+            mt_ctr_lat += lat;
+            doWritebacks(mac_writebacks, clockEdge(lat + forwardLatency
+                         + mt_ctr_lat + mac_lat + enc_lat));
         }
-        Cycles mt_ctr_lat(mt_miss_lvl*200+ctr_sastisfied*200);
         // After the evicted blocks are selected, they must be forwarded
         // to the write buffer to ensure they logically precede anything
         // happening below
@@ -500,7 +517,7 @@ BaseCache::recvTimingReq(PacketPtr pkt)
             doWritebacks(writebacks, clockEdge(lat
                     + forwardLatency));
         }else {
-            doWritebacks(mac_writebacks, clockEdge(lat + forwardLatency
+            doWritebacks(writebacks, clockEdge(lat + forwardLatency
                          + mt_ctr_lat + mac_lat + enc_lat));
         }
     }
@@ -532,36 +549,37 @@ BaseCache::recvTimingReq(PacketPtr pkt)
             std::vector<PacketPtr> ctr_pkt, mt_pkt;
             PacketPtr ctr_pk;
             ctr_pk = pkt->createRead(pkt->req);
-            ctr_pk->setAddr(pkt->getAddr()/64);
+            ctr_pk->setAddr((134217728+pkt->getAddr())/64);
             ctr_pk->setCounterCache();
-            ctr_sastisfied = ctr_access(ctr_pk, ctr_blk, lat,
-            ctr_writebacks);
+            ctr_sastisfied = Ctr_cache->read_access(ctr_pk->getAddr());
             unsigned mt_idx = 0;
             if (!ctr_sastisfied) {
                 // Send a counter read request to memory
-                handleTimingReqMiss(ctr_pk, ctr_blk, forward_time,
-                clockEdge(lat));
-
+                //handleTimingReqMiss(ctr_pk, ctr_blk, forward_time,
+                //clockEdge(lat));
+                incCtrMissCount(pkt);
                 Addr mt_addr = ctr_pk->getAddr()/8;
                 do {
                     mt_pkt.push_back(new Packet(*ctr_pk));
                     mt_pkt[mt_idx]->setAddr(mt_addr);
                     mt_pkt[mt_idx]->setMTCache();
                     mt_addr =  mt_addr/8;
-                    mt_sastisfied = mt_access(mt_pkt[mt_idx],
-                                              mt_blk,
-                                              lat,
-                                              mt_writebacks);
+                    mt_sastisfied = MT_cache->read_access(mt_pkt[mt_idx]->getAddr());
                     if (!mt_sastisfied) {
-                        handleTimingReqMiss(mt_pkt[mt_idx], mt_blk,
-                                            forward_time,
-                                            clockEdge(lat));
+                        incMTMissCount(pkt);
+                   //     handleTimingReqMiss(mt_pkt[mt_idx], mt_blk,
+                   //                         forward_time,
+                   //                         clockEdge(lat));
                         mt_miss_lvl++;
+                    } else {
+                        incMTHitCount(pkt);
                     }
                     mt_idx++;
                 } while (mt_miss_lvl < 5 && !mt_sastisfied);
                 pkt->setMTlevel(mt_miss_lvl+1);
 
+            } else {
+                incCtrHitCount(pkt);
             }
         }
 
@@ -655,17 +673,14 @@ BaseCache::recvTimingResp(PacketPtr pkt)
     // the response is an invalidation
     assert(!mshr->wasWholeLineWrite || pkt->isInvalidate());
 
-    CacheBlk *blk;
-    if (pkt->DataCache())
-        blk = tags->findBlock(pkt->getAddr(), pkt->isSecure());
-    else if (pkt->MTcache())
-        blk = MT_tags->findBlock(pkt->getAddr(), pkt->isSecure());
+    if (pkt->MTcache())
+        MT_cache->update_cache(pkt->getAddr());
     else if (pkt->CounterCache())
-        blk = Ctr_tags->findBlock(pkt->getAddr(), pkt->isSecure());
-    else
-        assert(0);
+        Ctr_cache->update_cache(pkt->getAddr());
 
-    if (is_fill && !is_error) {
+    CacheBlk*  blk = tags->findBlock(pkt->getAddr(), pkt->isSecure());
+
+    if (is_fill && !is_error && !(pkt->MTcache()) && !(pkt->CounterCache())) {
         DPRINTF(Cache, "Block for addr %#llx being updated in Cache\n",
                 pkt->getAddr());
 
@@ -678,7 +693,7 @@ BaseCache::recvTimingResp(PacketPtr pkt)
 
     // Don't want to promote the Locked RMW Read until
     // the locked write comes in
-    if (!mshr->hasLockedRMWReadTarget()) {
+    if (!mshr->hasLockedRMWReadTarget() && !(pkt->MTcache()) && !(pkt->CounterCache())) {
         if (blk && blk->isValid() && pkt->isClean() && !pkt->isInvalidate()) {
             // The block was marked not readable while there was a pending
             // cache maintenance operation, restore its flag.
@@ -699,11 +714,11 @@ BaseCache::recvTimingResp(PacketPtr pkt)
             mshr->promoteWritable();
         }
     }
-
-    serviceMSHRTargets(mshr, pkt, blk);
+    if (!(pkt->MTcache()) && !(pkt->CounterCache()))
+        serviceMSHRTargets(mshr, pkt, blk);
     // We are stopping servicing targets early for the Locked RMW Read until
     // the write comes.
-    if (!mshr->hasLockedRMWReadTarget()) {
+    if (!mshr->hasLockedRMWReadTarget() && !(pkt->MTcache()) && !(pkt->CounterCache())) {
         if (mshr->promoteDeferredTargets()) {
             // avoid later read getting stale data while write miss is
             // outstanding.. see comment in timingAccess()
@@ -740,9 +755,42 @@ BaseCache::recvTimingResp(PacketPtr pkt)
 
     const Tick forward_time = clockEdge(forwardLatency) + pkt->headerDelay;
     // copy writebacks to write buffer
-    if (pkt->MTcache() || pkt->CounterCache()) {
+    bool ctr_sastisfied, mt_sastisfied;
+    unsigned mt_miss_lvl;
+    if (encryption_enable) {
+        PacketList ctr_writebacks, mt_writebacks;
+        std::vector<PacketPtr> ctr_pkt, mt_pkt;
+        PacketPtr ctr_pk;
+        ctr_pk = pkt->createRead(pkt->req);
+        ctr_pk->setAddr((134217728+pkt->getAddr())/64);
+        ctr_pk->setCounterCache();
+        ctr_sastisfied = Ctr_cache->read_access(ctr_pk->getAddr());
+        unsigned mt_idx = 0;
+        if (!ctr_sastisfied) {
+            // Send a counter read request to memory
+            MT_cache->update_cache(ctr_pk->getAddr());
+            incCtrMissCount(pkt);
+            Addr mt_addr = ctr_pk->getAddr()/8;
+            do {
+                mt_pkt.push_back(new Packet(*ctr_pk));
+                mt_pkt[mt_idx]->setAddr(mt_addr);
+                mt_pkt[mt_idx]->setMTCache();
+                mt_addr =  mt_addr/8;
+                mt_sastisfied = MT_cache->read_access(mt_pkt[mt_idx]->getAddr());
+                if (!mt_sastisfied) {
+                    MT_cache->update_cache(mt_addr);
+                    mt_miss_lvl++;
+                } else {
+                }
+                mt_idx++;
+            } while (mt_miss_lvl < 5 && !mt_sastisfied);
+            pkt->setMTlevel(mt_miss_lvl+1);
+        } else {
+        }
+    }
+    if (!(pkt->MTcache() || pkt->CounterCache())) {
         doWritebacks(writebacks, forward_time);
-    } else if (pkt->DataCache()){
+    } else {
         Cycles lat;
         CacheBlk *blk = nullptr;
         CacheBlk *ctr_blk = nullptr;
@@ -758,55 +806,60 @@ BaseCache::recvTimingResp(PacketPtr pkt)
         unsigned mt_miss_lvl = 0;
         PacketList ctr_writebacks, mt_writebacks, mac_writebacks;
         std::vector<PacketPtr> ctr_pkt;
-
+        Cycles mt_ctr_lat(0);
         if (writebacks.size() && encryption_enable){
             unsigned idx = 0;
             for (auto i = writebacks.begin(); i != writebacks.end(); ++i) {
 
-                PacketPtr mac = *i;
-                (*i)->setAddr((*i)->getAddr()/8);
+                PacketPtr mac = (*i)->createWrite((*i)->req);
+                mac->setAddr((*i)->getAddr()/8);
+                mac->setMAC();
                 mac_writebacks.push_back(mac);
 
                 ctr_pkt.push_back((*i)->createWrite((*i)->req));
                 PacketPtr temp = *i;
-                ctr_pkt[idx]->setAddr(temp->getAddr()/64);
+                ctr_pkt[idx]->setAddr(134217728+temp->getAddr()/64);
                 ctr_pkt[idx]->setCounterCache();
-                ctr_sastisfied = ctr_access(ctr_pkt[idx], ctr_blk, lat,
-                ctr_writebacks);
+                ctr_sastisfied = Ctr_cache->read_access(ctr_pkt[idx]->getAddr());
                 unsigned mt_idx = 0;
                 std::vector<PacketPtr> mt_pkt;
                 if (!ctr_sastisfied) {
                     // Send a counter read request to memory
-                    handleTimingReqMiss(ctr_pkt[idx], ctr_blk, forward_time,
-                    clockEdge(lat));
-
+                    //handleTimingReqMiss(ctr_pkt[idx], ctr_blk, forward_time,
+                    //clockEdge(lat));
+                    incCtrMissCount(pkt);
                     Addr mt_addr = ctr_pkt[idx]->getAddr()/8;
                     do {
                         mt_pkt.push_back(new Packet(*ctr_pkt[idx]));
                         mt_pkt[mt_idx]->setAddr(mt_addr);
                         mt_pkt[mt_idx]->setMTCache();
                         mt_addr =  mt_addr/8;
-                        mt_sastisfied = mt_access(mt_pkt[mt_idx],
-                                                    mt_blk,
-                                                    lat,
-                                                    mt_writebacks);
+                        mt_sastisfied = MT_cache->read_access(mt_pkt[mt_idx]->getAddr());
                         if (!mt_sastisfied) {
-                            handleTimingReqMiss(mt_pkt[idx], mt_blk,
-                                                forward_time,
-                                                clockEdge(lat));
+                           // handleTimingReqMiss(mt_pkt[idx], mt_blk,
+                           //                     forward_time,
+                           //                     clockEdge(lat));
+                            incMTMissCount(pkt);
                             mt_miss_lvl++;
+                        } else {
+                            incMTHitCount(pkt);
                         }
                         mt_idx++;
                     } while (mt_miss_lvl < 5 && !mt_sastisfied);
 
-                doWritebacks(ctr_writebacks, clockEdge(lat+forwardLatency));
-                doWritebacks(mt_writebacks, clockEdge(lat+forwardLatency));
+                    //doWritebacks(ctr_writebacks, clockEdge(lat+forwardLatency));
+                    //doWritebacks(mt_writebacks, clockEdge(lat+forwardLatency));
                     (*i)->setMTlevel(mt_miss_lvl+1);
+                } else {
+                    incCtrHitCount(pkt);
                 }
                 idx++;
             }
+            Cycles lat(mt_miss_lvl*200+ctr_sastisfied*200);
+            mt_ctr_lat += lat;
+            doWritebacks(mac_writebacks, clockEdge(lat + forwardLatency
+                         + mt_ctr_lat + mac_lat + enc_lat));
         }
-        Cycles mt_ctr_lat(mt_miss_lvl*200+ctr_sastisfied*200);
         // After the evicted blocks are selected, they must be forwarded
         // to the write buffer to ensure they logically precede anything
         // happening below
@@ -818,10 +871,12 @@ BaseCache::recvTimingResp(PacketPtr pkt)
             doWritebacks(writebacks, clockEdge(lat + forwardLatency
                          + mt_ctr_lat + mac_lat + enc_lat));
         }
-    } else {
-        assert(0);
     }
 
+    if (encryption_enable) {
+       // stats.ctrmissr = stats.ctrmisses /(stats.ctrmisses+stats.ctrhits);
+       // stats.mtmissr = stats.mtmisses/ (stats.mtmisses+stats.mthits);
+    }
     DPRINTF(CacheVerbose, "%s: Leaving with %s\n", __func__, pkt->print());
     delete pkt;
 }
@@ -1423,130 +1478,6 @@ BaseCache::calculateAccessLatency(const CacheBlk* blk, const uint32_t delay,
 }
 
 bool
-BaseCache::mt_access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
-                  PacketList &writebacks)
-{
-    // sanity check
-    assert(pkt->isRequest());
-    assert(pkt->MTcache());
-    gem5_assert(!(isReadOnly && pkt->isWrite()),
-                "Should never see a write in a read-only cache %s\n",
-                name());
-
-    // Access block in the tags
-    Cycles tag_latency(0);
-    blk = MT_tags->accessBlock(pkt, tag_latency);
-
-    DPRINTF(Cache, "%s for %s %s\n", __func__, pkt->print(),
-            blk ? "hit " + blk->print() : "miss");
-
-
-    // The critical latency part of a write depends only on the tag access
-    if (pkt->isWrite()) {
-        lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
-    }
-
-    if (blk && (pkt->needsWritable() ?
-            blk->isSet(CacheBlk::WritableBit) :
-            blk->isSet(CacheBlk::ReadableBit))) {
-        // OK to satisfy access
-        incMTHitCount(pkt);
-
-        // Calculate access latency based on the need to access the data array
-        if (pkt->isRead()) {
-            lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
-
-            // When a block is compressed, it must first be decompressed
-            // before being read. This adds to the access latency.
-            if (compressor) {
-                lat += compressor->getDecompressionLatency(blk);
-            }
-        } else {
-            lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
-        }
-
-        satisfyRequest(pkt, blk);
-        maintainClusivity(pkt->fromCache(), blk);
-
-        return true;
-    }
-
-    // Can't satisfy access normally... either no block (blk == nullptr)
-    // or have block but need writable
-
-    incMTMissCount(pkt);
-
-    lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
-
-    if (!blk && pkt->isLLSC() && pkt->isWrite()) {
-        // complete miss on store conditional... just give up now
-        pkt->req->setExtraData(0);
-        return true;
-    }
-
-    return false;
-}
-
-bool
-BaseCache::ctr_access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
-                  PacketList &writebacks)
-{
-    // sanity check
-    assert(pkt->isRequest());
-    assert(pkt->CounterCache());
-    gem5_assert(!(isReadOnly && pkt->isWrite()),
-                "Should never see a write in a read-only cache %s\n",
-                name());
-
-    // Access block in the tags
-    Cycles tag_latency(0);
-    blk = Ctr_tags->accessBlock(pkt, tag_latency);
-
-    DPRINTF(Cache, "%s for %s %s\n", __func__, pkt->print(),
-            blk ? "hit " + blk->print() : "miss");
-
-
-
-    // The critical latency part of a write depends only on the tag access
-    if (pkt->isWrite()) {
-        lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
-    }
-
-    if (blk && (pkt->needsWritable() ?
-            blk->isSet(CacheBlk::WritableBit) :
-            blk->isSet(CacheBlk::ReadableBit))) {
-        // OK to satisfy access
-        incCtrHitCount(pkt);
-
-        // Calculate access latency based on the need to access the data array
-        if (pkt->isRead()) {
-            lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
-
-            // When a block is compressed, it must first be decompressed
-            // before being read. This adds to the access latency.
-            if (compressor) {
-                lat += compressor->getDecompressionLatency(blk);
-            }
-        } else {
-            lat = calculateTagOnlyLatency(pkt->headerDelay, tag_latency);
-        }
-
-        satisfyRequest(pkt, blk);
-        maintainClusivity(pkt->fromCache(), blk);
-
-        return true;
-    }
-
-    // Can't satisfy access normally... either no block (blk == nullptr)
-    // or have block but need writable
-
-    incCtrMissCount(pkt);
-
-    lat = calculateAccessLatency(blk, pkt->headerDelay, tag_latency);
-
-    return false;
-}
-bool
 BaseCache::access(PacketPtr pkt, CacheBlk *&blk, Cycles &lat,
                   PacketList &writebacks)
 {
@@ -1953,18 +1884,9 @@ BaseCache::allocateBlock(const PacketPtr pkt, PacketList &writebacks)
     // Find replacement victim
     std::vector<CacheBlk*> evict_blks;
     CacheBlk *victim;
-    if (pkt->DataCache()) {
-        victim = tags->findVictim(addr, is_secure, blk_size_bits,
+    victim = tags->findVictim(addr, is_secure, blk_size_bits,
                                         evict_blks);
-    } else if (pkt->CounterCache()){
-        victim = Ctr_tags->findVictim(addr, is_secure, blk_size_bits,
-                                        evict_blks);
-    } else if (pkt->MTcache()){
-        victim = MT_tags->findVictim(addr, is_secure, blk_size_bits,
-                                        evict_blks);
-    } else {
-        assert(0);
-    }
+
 
     // It is valid to return nullptr if there is no victim
     if (!victim)
@@ -1979,15 +1901,9 @@ BaseCache::allocateBlock(const PacketPtr pkt, PacketList &writebacks)
     }
 
     // Insert new block at victimized entry
-    if (pkt->DataCache()) {
+
         tags->insertBlock(pkt, victim);
-    } else if (pkt->CounterCache()){
-        Ctr_tags->insertBlock(pkt, victim);
-    } else if (pkt->MTcache()){
-        MT_tags->insertBlock(pkt, victim);
-    } else {
-        assert(0);
-    }
+
 
     // If using a compressor, set compression data. This must be done after
     // insertion, as the compression bit may be set.
@@ -2366,18 +2282,6 @@ BaseCache::CacheCmdStats::CacheCmdStats(BaseCache &c,
                                         const std::string &name)
     : statistics::Group(&c, name.c_str()), cache(c),
 
-      ADD_STAT(ctrhits, statistics::units::Count::get(),
-               ("number of " + name + " CT hits").c_str()),
-      ADD_STAT(ctrmisses, statistics::units::Count::get(),
-               ("number of " + name + " CT misses").c_str()),
-      ADD_STAT(ctmissr, statistics::units::Count::get(),
-               ("number of " + name + " CT misses rate").c_str()),
-      ADD_STAT(mthits, statistics::units::Count::get(),
-               ("number of " + name + " MT hits").c_str()),
-      ADD_STAT(mtmisses, statistics::units::Count::get(),
-               ("number of " + name + " MT misses").c_str()),
-      ADD_STAT(mtmissr, statistics::units::Count::get(),
-               ("number of " + name + " MT misses rate").c_str()),
       ADD_STAT(hits, statistics::units::Count::get(),
                ("number of " + name + " hits").c_str()),
       ADD_STAT(misses, statistics::units::Count::get(),
@@ -2423,42 +2327,6 @@ BaseCache::CacheCmdStats::regStatsFromParent()
     System *system = cache.system;
     const auto max_requestors = system->maxRequestors();
 
-    // ctr hits formulas
-    ctrhits.flags(total | nozero | nonan);
-    for (int i = 0; i < max_requestors; i++) {
-        ctrhits.subname(i, system->getRequestorName(i));
-    }
-
-    // ctr hits formulas
-    ctrmisses.flags(total | nozero | nonan);
-    for (int i = 0; i < max_requestors; i++) {
-        ctrmisses.subname(i, system->getRequestorName(i));
-    }
-
-    // ctr mr formulas
-    ctrmissr.flags(total | nozero | nonan);
-    ctrmissr = ctrmisses /(ctrmisses+ctrhits);
-    for (int i = 0; i < max_requestors; i++) {
-        ctrmissr.subname(i, system->getRequestorName(i));
-    }
-
-    // mt hits formulas
-    mthits.flags(total | nozero | nonan);
-    for (int i = 0; i < max_requestors; i++) {
-        mthits.subname(i, system->getRequestorName(i));
-    }
-    // mt misses formulas
-    mtmisses.flags(total | nozero | nonan);
-    for (int i = 0; i < max_requestors; i++) {
-        mtmisses.subname(i, system->getRequestorName(i));
-    }
-
-    // mt mr formulas
-    mtmissr.flags(total | nozero | nonan);
-    mtmissr = mtmisses /(mtmisses+mthits);
-    for (int i = 0; i < max_requestors; i++) {
-        mtmissr.subname(i, system->getRequestorName(i));
-    }
 
     hits
         .init(max_requestors)
@@ -2588,9 +2456,21 @@ BaseCache::CacheCmdStats::regStatsFromParent()
 BaseCache::CacheStats::CacheStats(BaseCache &c)
     : statistics::Group(&c), cache(c),
 
-    ADD_STAT(demandHits, statistics::units::Count::get(),
+    ADD_STAT(ctrhits, statistics::units::Count::get(),
+            "number of  CT hits"),
+    ADD_STAT(ctrmisses, statistics::units::Count::get(),
+            "number of  CT misses"),
+    ADD_STAT(ctrmissr, statistics::units::Ratio::get(),
+            "number of  CT misses rate"),
+    ADD_STAT(mthits, statistics::units::Count::get(),
+            "number of  MT hits"),
+    ADD_STAT(mtmisses, statistics::units::Count::get(),
+            "number of  MT misses"),
+    ADD_STAT(mtmissr, statistics::units::Ratio::get(),
+            "number of  MT misses rate"),
+    ADD_STAT(demandHits, statistics::units::Tick::get(),
              "number of demand (read+write) hits"),
-    ADD_STAT(overallHits, statistics::units::Count::get(),
+    ADD_STAT(overallHits, statistics::units::Tick::get(),
              "number of overall hits"),
     ADD_STAT(demandHitLatency, statistics::units::Tick::get(),
              "number of demand (read+write) hit ticks"),
@@ -2694,6 +2574,32 @@ BaseCache::CacheStats::regStats()
     (cmd[MemCmd::SoftPFReq]->s + cmd[MemCmd::HardPFReq]->s +    \
      cmd[MemCmd::SoftPFExReq]->s)
 
+    // ctr hits formulas
+    ctrhits.flags(total | nonan);
+    ctrhits = 0;
+
+    // ctr misses formulas
+    ctrmisses.flags(total | nonan);
+    ctrmisses = 0;
+
+    // ctr mr formulas
+    ctrmissr.flags(total | nonan);
+    //ctrmissr = 0;
+
+    // mt hits formulas
+    mthits.flags(total | nonan);
+    mthits = 0;
+
+    // mt misses formulas
+    mtmisses.flags(total | nonan);
+    mtmisses = 0;
+
+    // mt mr formulas
+    mtmissr.flags(total | nonan);
+    //mtmissr = 0;
+
+    ctrmissr = ctrmisses /(ctrmisses+ctrhits);
+    mtmissr = mtmisses/ (mtmisses+mthits);
     demandHits.flags(total | nozero | nonan);
     demandHits = SUM_DEMAND(hits);
     for (int i = 0; i < max_requestors; i++) {

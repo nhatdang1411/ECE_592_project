@@ -49,7 +49,9 @@ class BaseTags(ClockedObject):
     system = Param.System(Parent.any, "System we belong to")
 
     # Get the size from the parent (cache)
-    size = Param.MemorySize(Parent.size, "capacity in bytes")
+    size = Param.MemorySize(Parent.size, "cache size")
+    # Ctrsize = Param.MemorySize(Parent.Ctrsize, "Counter cache size")
+    # MTsize = Param.MemorySize(Parent.MTsize, "Merkle tree cache size")
 
     # Get the block size from the parent (system)
     block_size = Param.Int(Parent.cache_line_size, "block size in bytes")
@@ -86,9 +88,10 @@ class BaseSetAssoc(BaseTags):
     cxx_header = "mem/cache/tags/base_set_assoc.hh"
     cxx_class = "gem5::BaseSetAssoc"
 
-    # Get the cache associativity
     assoc = Param.Int(Parent.assoc, "associativity")
+    MTassoc = Param.Int(Parent.MTassoc, "Merkle tree cache associativity")
 
+    Ctrassoc = Param.Int(Parent.Ctrassoc, "Counter cache associativity")
     # Get replacement policy from the parent (cache)
     replacement_policy = Param.BaseReplacementPolicy(
         Parent.replacement_policy, "Replacement policy"
@@ -120,6 +123,9 @@ class CompressedTags(SectorTags):
     cxx_header = "mem/cache/tags/compressed_tags.hh"
     cxx_class = "gem5::CompressedTags"
 
+    def __init__(self, enc=0, mt=0):
+        super().__init__(enc, mt)
+
     # Maximum number of compressed blocks per tag
     max_compression_ratio = Param.Int(
         2, "Maximum number of compressed blocks per tag."
@@ -137,6 +143,9 @@ class FALRU(BaseTags):
     type = "FALRU"
     cxx_header = "mem/cache/tags/fa_lru.hh"
     cxx_class = "gem5::FALRU"
+
+    def __init__(self, enc=0, mt=0):
+        super().__init__(enc, mt)
 
     min_tracked_cache_size = Param.MemorySize(
         "128KiB", "Minimum cache size for which we track statistics"
