@@ -468,7 +468,7 @@ BaseCache::recvTimingReq(PacketPtr pkt)
                 mac_writebacks.push_back(mac);
 
                 ctr_pkt.push_back((*i)->createWrite((*i)->req));
-                ctr_pkt[idx]->setAddr(134217728+(*i)->getAddr()/64);
+                ctr_pkt[idx]->setAddr((*i)->getAddr()/64);
                 ctr_pkt[idx]->setCounterCache();
                 ctr_sastisfied = Ctr_cache->read_access(
                                                 ctr_pkt[idx]->getAddr());
@@ -476,9 +476,9 @@ BaseCache::recvTimingReq(PacketPtr pkt)
                 std::vector<PacketPtr> mt_pkt;
                 if (!ctr_sastisfied) {
                     // Send a counter read request to memory
-                    
+
                     incCtrMissCount(pkt);
-                    Addr mt_addr = ctr_pkt[idx]->getAddr()/8;
+                    Addr mt_addr = 4096+ctr_pkt[idx]->getAddr()/8;
                     do {
                         mt_pkt.push_back(new Packet(*ctr_pkt[idx]));
                         mt_pkt[mt_idx]->setAddr(mt_addr);
@@ -507,8 +507,8 @@ BaseCache::recvTimingReq(PacketPtr pkt)
             }
             Cycles lat(mt_miss_lvl*200+ctr_sastisfied*200);
             mt_ctr_lat += lat;
-            doWritebacks(mac_writebacks, clockEdge(lat + forwardLatency
-                         + mt_ctr_lat + mac_lat + enc_lat));
+           // doWritebacks(mac_writebacks, clockEdge(lat + forwardLatency
+           //              + mt_ctr_lat + mac_lat + enc_lat));
         }
         // After the evicted blocks are selected, they must be forwarded
         // to the write buffer to ensure they logically precede anything
@@ -549,7 +549,7 @@ BaseCache::recvTimingReq(PacketPtr pkt)
             std::vector<PacketPtr> ctr_pkt, mt_pkt;
             PacketPtr ctr_pk;
             ctr_pk = pkt->createRead(pkt->req);
-            ctr_pk->setAddr((134217728+pkt->getAddr())/64);
+            ctr_pk->setAddr(pkt->getAddr()/64);
             ctr_pk->setCounterCache();
             ctr_sastisfied = Ctr_cache->read_access(ctr_pk->getAddr());
             unsigned mt_idx = 0;
@@ -557,8 +557,8 @@ BaseCache::recvTimingReq(PacketPtr pkt)
                 // Send a counter read request to memory
                 //handleTimingReqMiss(ctr_pk, ctr_blk, forward_time,
                 //clockEdge(lat));
-                incCtrMissCount(pkt);
-                Addr mt_addr = ctr_pk->getAddr()/8;
+                //incCtrMissCount(pkt);
+                Addr mt_addr = 4096+ctr_pk->getAddr()/8;
                 do {
                     mt_pkt.push_back(new Packet(*ctr_pk));
                     mt_pkt[mt_idx]->setAddr(mt_addr);
@@ -566,13 +566,13 @@ BaseCache::recvTimingReq(PacketPtr pkt)
                     mt_addr =  mt_addr/8;
                     mt_sastisfied = MT_cache->read_access(mt_pkt[mt_idx]->getAddr());
                     if (!mt_sastisfied) {
-                        incMTMissCount(pkt);
+                          incMTMissCount(pkt);
                    //     handleTimingReqMiss(mt_pkt[mt_idx], mt_blk,
                    //                         forward_time,
                    //                         clockEdge(lat));
                         mt_miss_lvl++;
                     } else {
-                        incMTHitCount(pkt);
+                          incMTHitCount(pkt);
                     }
                     mt_idx++;
                 } while (mt_miss_lvl < 5 && !mt_sastisfied);
@@ -673,10 +673,6 @@ BaseCache::recvTimingResp(PacketPtr pkt)
     // the response is an invalidation
     assert(!mshr->wasWholeLineWrite || pkt->isInvalidate());
 
-    if (pkt->MTcache())
-        MT_cache->update_cache(pkt->getAddr());
-    else if (pkt->CounterCache())
-        Ctr_cache->update_cache(pkt->getAddr());
 
     CacheBlk*  blk = tags->findBlock(pkt->getAddr(), pkt->isSecure());
 
@@ -756,21 +752,21 @@ BaseCache::recvTimingResp(PacketPtr pkt)
     const Tick forward_time = clockEdge(forwardLatency) + pkt->headerDelay;
     // copy writebacks to write buffer
     bool ctr_sastisfied, mt_sastisfied;
-    unsigned mt_miss_lvl;
+    unsigned mt_miss_lvl=0;
     if (encryption_enable) {
         PacketList ctr_writebacks, mt_writebacks;
         std::vector<PacketPtr> ctr_pkt, mt_pkt;
         PacketPtr ctr_pk;
         ctr_pk = pkt->createRead(pkt->req);
-        ctr_pk->setAddr((134217728+pkt->getAddr())/64);
+        ctr_pk->setAddr(pkt->getAddr()/64);
         ctr_pk->setCounterCache();
         ctr_sastisfied = Ctr_cache->read_access(ctr_pk->getAddr());
         unsigned mt_idx = 0;
         if (!ctr_sastisfied) {
             // Send a counter read request to memory
-            MT_cache->update_cache(ctr_pk->getAddr());
+            Ctr_cache->update_cache(ctr_pk->getAddr());
             incCtrMissCount(pkt);
-            Addr mt_addr = ctr_pk->getAddr()/8;
+            Addr mt_addr = 4096+ctr_pk->getAddr()/8;
             do {
                 mt_pkt.push_back(new Packet(*ctr_pk));
                 mt_pkt[mt_idx]->setAddr(mt_addr);
@@ -818,7 +814,7 @@ BaseCache::recvTimingResp(PacketPtr pkt)
 
                 ctr_pkt.push_back((*i)->createWrite((*i)->req));
                 PacketPtr temp = *i;
-                ctr_pkt[idx]->setAddr(134217728+temp->getAddr()/64);
+                ctr_pkt[idx]->setAddr(temp->getAddr()/64);
                 ctr_pkt[idx]->setCounterCache();
                 ctr_sastisfied = Ctr_cache->read_access(ctr_pkt[idx]->getAddr());
                 unsigned mt_idx = 0;
@@ -828,7 +824,7 @@ BaseCache::recvTimingResp(PacketPtr pkt)
                     //handleTimingReqMiss(ctr_pkt[idx], ctr_blk, forward_time,
                     //clockEdge(lat));
                     incCtrMissCount(pkt);
-                    Addr mt_addr = ctr_pkt[idx]->getAddr()/8;
+                    Addr mt_addr = 4096+ctr_pkt[idx]->getAddr()/8;
                     do {
                         mt_pkt.push_back(new Packet(*ctr_pkt[idx]));
                         mt_pkt[mt_idx]->setAddr(mt_addr);
@@ -857,8 +853,8 @@ BaseCache::recvTimingResp(PacketPtr pkt)
             }
             Cycles lat(mt_miss_lvl*200+ctr_sastisfied*200);
             mt_ctr_lat += lat;
-            doWritebacks(mac_writebacks, clockEdge(lat + forwardLatency
-                         + mt_ctr_lat + mac_lat + enc_lat));
+            //doWritebacks(mac_writebacks, clockEdge(lat + forwardLatency
+            //             + mt_ctr_lat + mac_lat + enc_lat));
         }
         // After the evicted blocks are selected, they must be forwarded
         // to the write buffer to ensure they logically precede anything

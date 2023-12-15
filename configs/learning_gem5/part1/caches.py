@@ -123,6 +123,8 @@ class L2Cache(NoncoherentCache):
     mshrs = 20
     tgts_per_mshr = 12
     encrypt_en = 1
+    MTsize = 2048
+    Ctrsize = 2048
 
     SimpleOpts.add_option("--l2_size", help=f"L2 cache size. Default: {size}")
 
